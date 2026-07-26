@@ -1,8 +1,6 @@
 import { 
   joinVoiceChannel, 
-  getVoiceConnection, 
-  VoiceConnectionStatus, 
-  entersState 
+  getVoiceConnection 
 } from "@discordjs/voice";
 
 let discordClient = null;
@@ -18,6 +16,7 @@ export async function joinChannel(voiceChannel, textChannel) {
   let connection = getVoiceConnection(voiceChannel.guild.id);
 
   if (!connection) {
+    // สั่งเชื่อมต่อเข้าห้องเสียงทันที
     connection = joinVoiceChannel({
       channelId: voiceChannel.id,
       guildId: voiceChannel.guild.id,
@@ -25,9 +24,6 @@ export async function joinChannel(voiceChannel, textChannel) {
       selfDeaf: false,
       selfMute: false,
     });
-
-    // รอการเชื่อมต่อภายใน 15 วินาที
-    await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
   }
 
   sessions.set(voiceChannel.guild.id, {
