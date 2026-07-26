@@ -7,13 +7,14 @@ import {
   EndBehaviorType,
   StreamType
 } from "@discordjs/voice";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import prism from "@prism-media/prism";
 import { pipeline } from "stream";
 import fs from "fs";
 import path from "path";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 const sessions = new Map();
 
 export async function joinChannel(voiceChannel, textChannel) {
@@ -33,7 +34,7 @@ export async function joinChannel(voiceChannel, textChannel) {
 
   const receiver = connection.receiver;
 
-  // ดักฟังเวลาคนเริ่มพูด
+  // ดักฟังเวลาคนเริ่มพูดในห้องเสียง
   receiver.speaking.on("start", (userId) => {
     listenAndReply(receiver, userId, voiceChannel.guild.id, textChannel);
   });
@@ -48,7 +49,7 @@ export async function joinChannel(voiceChannel, textChannel) {
   return connection;
 }
 
-// อัดเสียง อัปโหลดไป Gemini แล้วแปลงข้อความก๊อกสองกลับมาเป็นเสียงพูด
+// อัดเสียง อัปโหลดไป Gemini แล้วแปลงคำตอบเป็นเสียงพูดกลับมา
 async function listenAndReply(receiver, userId, guildId, textChannel) {
   const session = sessions.get(guildId);
   if (!session || session.isProcessing) return; 
@@ -74,9 +75,10 @@ async function listenAndReply(receiver, userId, guildId, textChannel) {
     }
 
     try {
-      // อ่านไฟล์เสียงที่อัดได้
       const audioBuffer = fs.readFileSync(tempFilePath);
-      fs.unlinkSync(tempFilePath); // ลบไฟล์ชั่วคราวทิ้ง
+      if (fs.existsSync(tempFilePath)) {
+        fs.unlinkSync(tempFilePath); // ลบไฟล์ชั่วคราวทิ้ง
+      }
 
       // ถ้าไฟล์เสียงสั้นเกินไป (ไม่มีเสียงพูดจริง) ให้ข้าม
       if (audioBuffer.length < 10000) {
@@ -86,25 +88,21 @@ async function listenAndReply(receiver, userId, guildId, textChannel) {
 
       console.log("[AI Voice] กำลังส่งเสียงไปให้ Gemini คิดคำตอบ...");
 
-      // ส่งไฟล์เสียงตรงให้ Gemini 2.5 Flash ประมวลผล
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: [
-          {
-            inlineData: {
-              mimeType: 'audio/pcm',
-              data: audioBuffer.toString('base64')
-            }
-          },
-          'ตอบคำถามจากเสียงนี้สั้นๆ กระชับ เป็นกันเอง ภาษาไทย'
-        ]
-      });
+      // ส่งไฟล์เสียงตรงให้ Gemini 1.5 Flash ประมวลผล
+      const response = await model.generateContent([
+        {
+          inlineData: {
+            mimeType: 'audio/pcm',
+            data: audioBuffer.toString('base64')
+          }
+        },
+        'ตอบคำถามจากเสียงนี้สั้นๆ กระชับ เป็นกันเอง ภาษาไทย'
+      ]);
 
-      const replyText = response.text;
+      const replyText = response.response.text();
       console.log(`[Gemini ตอบ]: ${replyText}`);
 
       if (replyText) {
-        // ส่งเสียงตอบกลับมาในห้อง
         await speakInGuild(guildId, replyText);
       }
     } catch (error) {
