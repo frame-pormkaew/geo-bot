@@ -34,36 +34,45 @@ export async function joinChannel(voiceChannel, textChannel) {
 
   const receiver = connection.receiver;
 
-  // ดักจับเมื่อมีผู้ใช้เริ่มพูดในห้อง
+  // วิธีดักจับแบบบังคับ Subscribe ผู้ใช้ทุกคนในห้อง
+  voiceChannel.members.forEach((member) => {
+    if (!member.user.bot) {
+      subscribeToUser(receiver, member.id, voiceChannel.guild.id, textChannel);
+    }
+  });
+
+  // เมื่อมีคนใหม่กดเข้าห้องมา ให้ดักจับเพิ่มทันที
   receiver.speaking.on("start", (userId) => {
-    console.log(`[Voice Debug] ตรวจพบการเปิดไมค์จาก UserId: ${userId}`);
-    listenAndReply(receiver, userId, voiceChannel.guild.id, textChannel);
+    subscribeToUser(receiver, userId, voiceChannel.guild.id, textChannel);
   });
 
   sessions.set(voiceChannel.guild.id, {
     connection,
     textChannel,
     voiceChannel,
-    isProcessing: false
+    isProcessing: false,
+    activeSubscribers: new Set()
   });
 
-  console.log(`[Voice System] เข้าร่วมห้องเสียง ${voiceChannel.name} เรียบร้อยแล้ว`);
+  console.log(`[Voice System] เข้าร่วมห้องเสียง ${voiceChannel.name} และเริ่มดักฟังสมาชิกทุกคนแล้ว`);
   return connection;
 }
 
-async function listenAndReply(receiver, userId, guildId, textChannel) {
+function subscribeToUser(receiver, userId, guildId, textChannel) {
   const session = sessions.get(guildId);
-  if (!session || session.isProcessing) return; 
+  if (!session) return;
 
-  session.isProcessing = true;
+  // ถ้าอัดเสียงผู้ใช้นี้อยู่แล้ว ให้ข้าม
+  if (session.activeSubscribers.has(userId)) return;
+  session.activeSubscribers.add(userId);
+
+  console.log(`[Voice System] เริ่มสตรีมดักจับเสียงจาก User ID: ${userId}`);
 
   try {
-    console.log(`[Voice Debug] เริ่มบันทึกเสียงจาก UserId: ${userId}`);
-
     const opusStream = receiver.subscribe(userId, {
       end: {
         behavior: EndBehaviorType.AfterSilence,
-        duration: 1200, // หยุดบันทึกเมื่อเงียบไป 1.2 วินาที
+        duration: 1200, // เงียบไป 1.2 วินาทีถือว่าจบประโยค
       },
     });
 
@@ -72,30 +81,30 @@ async function listenAndReply(receiver, userId, guildId, textChannel) {
     const outStream = fs.createWriteStream(tempFilePath);
 
     pipeline(opusStream, pcmDecoder, outStream, async (err) => {
+      session.activeSubscribers.delete(userId); // เคลียร์สถานะเพื่อให้จับเสียงครั้งถัดไปได้
+
       if (err) {
-        console.error("[Voice Error] Audio Pipeline Failed:", err);
-        session.isProcessing = false;
+        console.error("[Voice Pipeline Error]:", err);
         return;
       }
 
+      if (session.isProcessing) return; // ถ้า AI กำลังประมวลผลคำตอบอยู่ให้ข้าม
+
       try {
-        if (!fs.existsSync(tempFilePath)) {
-          session.isProcessing = false;
-          return;
-        }
+        if (!fs.existsSync(tempFilePath)) return;
 
         const audioBuffer = fs.readFileSync(tempFilePath);
-        fs.unlinkSync(tempFilePath); // ลบไฟล์ temp หลังอ่านค่า
+        fs.unlinkSync(tempFilePath); // ลบไฟล์ temp
 
-        console.log(`[Voice Debug] ขนาดไฟล์เสียงที่อัดได้: ${audioBuffer.length} bytes`);
+        console.log(`[Voice Debug] อ่านไฟล์เสียงสำเร็จ ขนาด: ${audioBuffer.length} bytes`);
 
-        // ถ้าไฟล์เสียงเล็กกว่า 6KB แสดงว่าเป็นเพียงเสียงคลิกไมค์หรือเสียงรบกวนสั้นๆ
+        // ถ้าไฟล์เสียงเล็กกว่า 6KB แสดงว่าแค่เปิดไมค์ทิ้งไว้หรือมีเสียงรบกวนสั้นๆ
         if (audioBuffer.length < 6000) {
-          console.log("[Voice Debug] เสียงสั้นเกินไป ข้ามการประมวลผล");
-          session.isProcessing = false;
+          console.log("[Voice Debug] เสียงสั้นเกินไป ข้าม");
           return;
         }
 
+        session.isProcessing = true;
         console.log(`[AI Voice] กำลังส่งไฟล์เสียงให้ Gemini 1.5 Flash...`);
 
         const response = await model.generateContent([
@@ -123,9 +132,10 @@ async function listenAndReply(receiver, userId, guildId, textChannel) {
         session.isProcessing = false;
       }
     });
+
   } catch (e) {
     console.error("[Subscribe Error]:", e);
-    session.isProcessing = false;
+    session.activeSubscribers.delete(userId);
   }
 }
 
