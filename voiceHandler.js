@@ -34,9 +34,9 @@ export async function joinChannel(voiceChannel, textChannel) {
 
   const receiver = connection.receiver;
 
-  // ดักฟังเหตุการณ์เมื่อมีคนเริ่มพูด
+  // ดักจับเมื่อมีผู้ใช้เริ่มพูดในห้อง
   receiver.speaking.on("start", (userId) => {
-    console.log(`[Voice System] ตรวจพบการพูดจาก UserId: ${userId}`);
+    console.log(`[Voice Debug] ตรวจพบการเปิดไมค์จาก UserId: ${userId}`);
     listenAndReply(receiver, userId, voiceChannel.guild.id, textChannel);
   });
 
@@ -47,6 +47,7 @@ export async function joinChannel(voiceChannel, textChannel) {
     isProcessing: false
   });
 
+  console.log(`[Voice System] เข้าร่วมห้องเสียง ${voiceChannel.name} เรียบร้อยแล้ว`);
   return connection;
 }
 
@@ -57,21 +58,22 @@ async function listenAndReply(receiver, userId, guildId, textChannel) {
   session.isProcessing = true;
 
   try {
-    // รับ Audio Stream จากผู้ใช้
+    console.log(`[Voice Debug] เริ่มบันทึกเสียงจาก UserId: ${userId}`);
+
     const opusStream = receiver.subscribe(userId, {
       end: {
         behavior: EndBehaviorType.AfterSilence,
-        duration: 1200, // เงียบไป 1.2 วินาทีถือว่าพูดจบ
+        duration: 1200, // หยุดบันทึกเมื่อเงียบไป 1.2 วินาที
       },
     });
 
     const pcmDecoder = new prism.opus.Decoder({ frameSize: 960, channels: 1, rate: 16000 });
-    const tempFilePath = path.join("/tmp", `user_${userId}_${Date.now()}.pcm`);
+    const tempFilePath = path.join("/tmp", `voice_${userId}_${Date.now()}.pcm`);
     const outStream = fs.createWriteStream(tempFilePath);
 
     pipeline(opusStream, pcmDecoder, outStream, async (err) => {
       if (err) {
-        console.error("[Voice Error] Audio pipeline:", err);
+        console.error("[Voice Error] Audio Pipeline Failed:", err);
         session.isProcessing = false;
         return;
       }
@@ -83,16 +85,18 @@ async function listenAndReply(receiver, userId, guildId, textChannel) {
         }
 
         const audioBuffer = fs.readFileSync(tempFilePath);
-        fs.unlinkSync(tempFilePath); // ลบไฟล์ชั่วคราว
+        fs.unlinkSync(tempFilePath); // ลบไฟล์ temp หลังอ่านค่า
 
-        // ถ้าขนาดเสียงเล็กเกินไป (ไม่มีการพูดจริง หรือมีแต่เสียงซ่า) ให้ข้าม
-        if (audioBuffer.length < 8000) {
-          console.log("[Voice System] เสียงสั้นเกินไป ข้ามการประมวลผล");
+        console.log(`[Voice Debug] ขนาดไฟล์เสียงที่อัดได้: ${audioBuffer.length} bytes`);
+
+        // ถ้าไฟล์เสียงเล็กกว่า 6KB แสดงว่าเป็นเพียงเสียงคลิกไมค์หรือเสียงรบกวนสั้นๆ
+        if (audioBuffer.length < 6000) {
+          console.log("[Voice Debug] เสียงสั้นเกินไป ข้ามการประมวลผล");
           session.isProcessing = false;
           return;
         }
 
-        console.log(`[AI Voice] กำลังส่งเสียงไปประมวลผลที่ Gemini...`);
+        console.log(`[AI Voice] กำลังส่งไฟล์เสียงให้ Gemini 1.5 Flash...`);
 
         const response = await model.generateContent([
           {
@@ -105,13 +109,16 @@ async function listenAndReply(receiver, userId, guildId, textChannel) {
         ]);
 
         const replyText = response.response.text();
-        console.log(`[Gemini ตอบกลับ]: ${replyText}`);
+        console.log(`[Gemini ตอบ]: ${replyText}`);
 
         if (replyText) {
+          if (textChannel) {
+            textChannel.send(`💬 **Gemini:** ${replyText}`).catch(() => {});
+          }
           await speakInGuild(guildId, replyText);
         }
       } catch (error) {
-        console.error("[Gemini Error]:", error);
+        console.error("[Gemini Voice Error]:", error);
       } finally {
         session.isProcessing = false;
       }
