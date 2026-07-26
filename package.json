@@ -1,0 +1,15 @@
+{
+  "name": "geo-body",
+  "version": "1.0.0",
+  "description": "ตัวละคร Geo ในเกม Minecraft Bedrock จริงๆ (ต่อผ่าน bedrock-protocol) รันบน Termux ในวง LAN เดียวกับเกม",
+  "type": "module",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "bedrock-protocol": "^3.57.0",
+    "dotenv": "^16.4.5",
+    "ws": "^8.18.0"
+  }
+}
