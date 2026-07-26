@@ -1,15 +1,23 @@
 {
-  "name": "geo-body",
-  "version": "1.0.0",
-  "description": "ตัวละคร Geo ในเกม Minecraft Bedrock จริงๆ (ต่อผ่าน bedrock-protocol) รันบน Termux ในวง LAN เดียวกับเกม",
+  "name": "geo-brain",
+  "version": "2.0.0",
+  "description": "สมองของ Geo: Discord bot + Gemini AI + รับ telemetry จาก geo-body แล้วคุยแบบธรรมชาติ",
   "type": "module",
-  "main": "bot.js",
+  "main": "index.js",
+  "engines": { "node": ">=18" },
   "scripts": {
-    "start": "node bot.js"
+    "start": "node index.js"
   },
   "dependencies": {
-    "bedrock-protocol": "^3.57.0",
+    "@discordjs/opus": "^0.9.0",
+    "@discordjs/voice": "^0.18.0",
+    "@google/genai": "^0.15.0",
+    "discord.js": "^14.16.3",
     "dotenv": "^16.4.5",
+    "ffmpeg-static": "^5.2.0",
+    "libsodium-wrappers": "^0.7.15",
+    "opusscript": "^0.1.1",
+    "prism-media": "^1.3.5",
     "ws": "^8.18.0"
   }
 }

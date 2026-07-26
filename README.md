@@ -1,78 +1,34 @@
-# geo-body (รันบน Termux)
+# geo-brain (deploy บน Render)
 
-ตัวละคร Geo ตัวจริงในเกม ต่อผ่าน `bedrock-protocol` เป็นผู้เล่นคนที่สอง — **ต้องอยู่วง WiFi
-เดียวกับตัวเกม** (ไม่ว่าจะเป็นเครื่องเดียวกับ Termux หรือคนละเครื่องก็ได้ ขอแค่ WiFi เดียวกัน)
+Discord bot + Gemini AI ของ Geo — คุยข้อความ/เสียงแบบธรรมชาติ และรับเหตุการณ์จากเกมมาคอมเมนต์
 
-## ติดตั้ง
+## เตรียมของ
+1. สร้างบอท Discord ที่ https://discord.com/developers/applications ตั้งชื่อ "Geo"
+   เปิด **Message Content Intent**, เก็บ Token ไว้
+2. เชิญบอทเข้าเซิร์ฟเวอร์ผ่าน OAuth2 URL Generator (scope `bot`, permission: View Channels,
+   Send Messages, Connect, Speak, Use Voice Activity)
+3. เอา Gemini API key จาก https://aistudio.google.com/apikey
 
-```bash
-pkg update -y
-pkg install -y nodejs-lts git
-cd geo-body
-npm install
-cp .env.example .env
-nano .env
-```
+## Deploy บน Render
+1. Push โฟลเดอร์ `geo-brain/` ขึ้น GitHub
+2. บน Render: New → **Background Worker** (ไม่ใช่ Web Service เต็มรูปแบบ แต่เนื่องจากเราเปิดพอร์ต
+   HTTP ไว้ให้ geo-body เชื่อมด้วย ใช้ **Web Service** ก็ได้เหมือนกัน เลือกอันไหนก็ได้ที่ Render
+   plan ของคุณรองรับการรันต่อเนื่อง)
+3. ตั้งค่า:
+   - Root Directory: `geo-brain`
+   - Build Command: `npm install`
+   - Start Command: `npm start`
+4. ใส่ Environment Variables ตาม `.env.example` (DISCORD_TOKEN, GEMINI_API_KEY, BRIDGE_SECRET
+   ตั้งรหัสยาวๆ เอง, BRIDGE_PORT ปล่อยว่างได้ Render จะกำหนด `PORT` มาให้เอง — ถ้า Render บังคับ
+   ใช้ตัวแปร `PORT` ของตัวเอง ให้แก้ `config.js` ให้อ่าน `process.env.PORT` แทน/ควบคู่ `BRIDGE_PORT`)
+5. Deploy แล้วดู log ว่าขึ้น `[discord] ล็อกอินสำเร็จ` และ `[bridge] เปิดรอ geo-body ที่พอร์ต ...`
+6. เอา URL ของ service (เช่น `https://geo-brain.onrender.com`) ไปใส่ในฝั่ง Termux โดยเปลี่ยน
+   `https://` เป็น `wss://`
 
-ใส่ค่าใน `.env`:
-- `BRAIN_WS_URL` — URL ของ geo-brain บน Render (`wss://...`)
-- `BRIDGE_SECRET` — ต้องตรงกับฝั่ง geo-brain เป๊ะๆ
-- `MC_HOST` / `MC_PORT` — ดูวิธีหาด้านล่าง
+⚠️ Render free tier บาง plan จะ "sleep" เมื่อไม่มีการเชื่อมต่อ ถ้าอยากให้ออนไลน์ตลอดต้องใช้ paid
+instance หรือใช้บริการ ping ภายนอกกระตุ้นเป็นระยะ
 
-## หา MC_HOST และ MC_PORT ของโลก LAN
-
-1. เปิดโลก Minecraft ที่จะเล่น ไปที่การตั้งค่า ให้ **"Visible to LAN Players" / "Play with Friends"
-   เปิดอยู่**
-2. ถ้า Termux อยู่**เครื่องเดียวกับเกม**: ใช้ `MC_HOST=127.0.0.1`
-   ถ้าอยู่**คนละเครื่อง**: หา IP วง LAN ของเครื่องที่ host เกม (ในมือถือ: ตั้งค่า Wi-Fi > รายละเอียด
-   เครือข่าย, หรือใน Termux รันเครื่องที่ host เกมเอง: `ip addr` ดูเลขที่ขึ้นต้น `192.168.` หรือ `10.`)
-3. หาพอร์ต: Bedrock เริ่มต้นที่ `19132` แต่บางทีโลก LAN จะใช้พอร์ตอื่น — วิธีเช็คง่ายสุดคือใช้
-   Minecraft อีกเครื่อง/อุปกรณ์หนึ่งเข้าไปดูที่แท็บ Friends จะเห็นเกม LAN ปรากฏพร้อมข้อมูลต่อ (บาง
-   เวอร์ชันกดที่ปุ่ม (i) ข้อมูลจะโชว์ IP:Port ให้) ถ้าหาไม่เจอลองพอร์ต default 19132 ก่อน
-
-## รัน
-
-```bash
-node bot.js
-```
-
-ควรเห็น:
-```
-[mc] กำลังต่อเข้า 127.0.0.1:19132 ในชื่อ GeoSad0864 (offline=true)
-[mc] เข้าโลกสำเร็จ ✅ Geo อยู่ในเกมแล้ว
-[mc] spawn เรียบร้อย เริ่มพฤติกรรมอัตโนมัติ
-[brain] auth ผ่าน ✅
-```
-
-ถ้าเชื่อมต่อไม่ติด ลองสลับ `MC_OFFLINE=false` ใน `.env` (บางโลกอาจต้องการให้ล็อกอิน Xbox Live
-จริง จะมีลิงก์ device-code ให้กดยืนยันตอนรันครั้งแรก)
-
-## ทดสอบทีละขั้น (แนะนำให้ทำตามลำดับนี้)
-
-1. **เข้าเกม**: เปิดเกม เห็นชื่อ `GeoSad0864` โผล่ในลิสต์ผู้เล่น / tab list ไหม
-2. **แชท**: พิมพ์อะไรในเกม แล้วดู log ของ Termux ว่าเห็นข้อความไหม, แล้วลองพิมพ์ @Geo ในดิสคอร์ด
-   ดูว่า Geo ตอบและข้อความโผล่ในแชทเกมไหม
-3. **เดิน**: รอ ~6 วิ ดูว่าตัวละคร Geo ขยับเดินเองไหม (พฤติกรรม `wander`)
-4. **ขุด/ตี**: สังเกตว่ามีท่าเหวี่ยงแขน (`swing_arm`) เกิดขึ้นไหม แล้วดูว่าบล็อกแตกจริง/โดนตีจริงไหม
-   — จุดนี้มีโอกาสสูงสุดที่จะยังไม่สมบูรณ์ ถ้าไม่ติดให้บอกอาการมาแล้วเดี๋ยวมาแก้กัน
-
-## Debug เพิ่มเติม
-
-ตั้ง `DEBUG_PACKETS=true` ใน `.env` เพื่อดูชื่อแพ็กเก็ตทั้งหมดที่วิ่งผ่าน จะช่วยเทียบว่า field
-ที่เขียนไว้ในโค้ดตรงกับของจริงไหม
-
-ดู field ที่แม่นยำที่สุดของเวอร์ชันที่กำลังใช้ได้จาก (หลัง `npm install` แล้ว):
-```
-node_modules/bedrock-protocol/data/<เวอร์ชัน>/proto.yml
-```
-ถ้า field ในไฟล์นี้ไม่ตรงกับที่เขียนไว้ใน `movement.js` / `actions.js` ให้แก้ตามไฟล์นี้ได้เลย
-หรือส่ง error/พฤติกรรมที่เจอมาคุยกันต่อได้
-
-## รันค้างไว้ยาวๆ
-```bash
-pkg install -y tmux
-tmux new -s geo
-node bot.js
-# Ctrl+B แล้ว D เพื่อออกจากหน้าจอโดยโปรเซสยังรันอยู่ กลับมาดูด้วย: tmux attach -t geo
-```
-ปิด battery optimization ของแอป Termux ในตั้งค่าแอนดรอยด์ ไม่งั้น Android อาจฆ่าโปรเซสพื้นหลัง
+## คำสั่งในดิสคอร์ด
+- `!join` — เข้าห้องเสียงมาคุยด้วยเสียง
+- `!leave` — ออกจากห้องเสียง
+- พิมพ์ **@Geo** — คุยข้อความ
