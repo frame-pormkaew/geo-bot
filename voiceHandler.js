@@ -7,10 +7,13 @@ import {
   EndBehaviorType,
   StreamType
 } from "@discordjs/voice";
-import { Endianness } from "@prism-media/prism";
-import pipeline from "stream";
+import { GoogleGenAI } from "@google/genai";
+import prism from "@prism-media/prism";
+import { pipeline } from "stream";
 import fs from "fs";
+import path from "path";
 
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const sessions = new Map();
 
 export async function joinChannel(voiceChannel, textChannel) {
@@ -28,36 +31,88 @@ export async function joinChannel(voiceChannel, textChannel) {
     });
   }
 
-  // ดักจับเสียงคนพูดในห้อง (Receiver)
   const receiver = connection.receiver;
 
+  // ดักฟังเวลาคนเริ่มพูด
   receiver.speaking.on("start", (userId) => {
-    // เมื่อมีคนเริ่มพูดในห้องเสียง
-    listenToUser(receiver, userId, voiceChannel.guild.id, textChannel);
+    listenAndReply(receiver, userId, voiceChannel.guild.id, textChannel);
   });
 
   sessions.set(voiceChannel.guild.id, {
     connection,
     textChannel,
     voiceChannel,
+    isProcessing: false
   });
 
   return connection;
 }
 
-// ฟังก์ชันอัดเสียงคนพูดเมื่อหยุดพูดเกิน 1 วินาที
-function listenToUser(receiver, userId, guildId, textChannel) {
-  const audioStream = receiver.subscribe(userId, {
+// อัดเสียง อัปโหลดไป Gemini แล้วแปลงข้อความก๊อกสองกลับมาเป็นเสียงพูด
+async function listenAndReply(receiver, userId, guildId, textChannel) {
+  const session = sessions.get(guildId);
+  if (!session || session.isProcessing) return; 
+
+  session.isProcessing = true; // ล็อกไว้ไม่ให้อัดเสียงซ้ำซ้อนขณะกำลังประมวลผล
+
+  const opusStream = receiver.subscribe(userId, {
     end: {
       behavior: EndBehaviorType.AfterSilence,
-      duration: 1000, // เงียบไป 1 วินาที ถือว่าพูดจบประโยค
+      duration: 1200, // เงียบไป 1.2 วินาทีถือว่าพูดจบประโยค
     },
   });
 
-  console.log(`[Voice] กำลังฟังเสียงจาก User: ${userId}...`);
+  const pcmDecoder = new prism.opus.Decoder({ frameSize: 960, channels: 2, rate: 48000 });
+  const tempFilePath = path.join("/tmp", `user_voice_${Date.now()}.pcm`);
+  const outStream = fs.createWriteStream(tempFilePath);
 
-  // แปลง Audio Stream เป็นไฟล์พร้อมส่งให้ AI
-  // (จุดนี้จะถูกส่งไปที่ STT -> Gemini AI -> ตอบกลับด้วยเสียง)
+  pipeline(opusStream, pcmDecoder, outStream, async (err) => {
+    if (err) {
+      console.error("Audio pipeline error:", err);
+      session.isProcessing = false;
+      return;
+    }
+
+    try {
+      // อ่านไฟล์เสียงที่อัดได้
+      const audioBuffer = fs.readFileSync(tempFilePath);
+      fs.unlinkSync(tempFilePath); // ลบไฟล์ชั่วคราวทิ้ง
+
+      // ถ้าไฟล์เสียงสั้นเกินไป (ไม่มีเสียงพูดจริง) ให้ข้าม
+      if (audioBuffer.length < 10000) {
+        session.isProcessing = false;
+        return;
+      }
+
+      console.log("[AI Voice] กำลังส่งเสียงไปให้ Gemini คิดคำตอบ...");
+
+      // ส่งไฟล์เสียงตรงให้ Gemini 2.5 Flash ประมวลผล
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: [
+          {
+            inlineData: {
+              mimeType: 'audio/pcm',
+              data: audioBuffer.toString('base64')
+            }
+          },
+          'ตอบคำถามจากเสียงนี้สั้นๆ กระชับ เป็นกันเอง ภาษาไทย'
+        ]
+      });
+
+      const replyText = response.text;
+      console.log(`[Gemini ตอบ]: ${replyText}`);
+
+      if (replyText) {
+        // ส่งเสียงตอบกลับมาในห้อง
+        await speakInGuild(guildId, replyText);
+      }
+    } catch (error) {
+      console.error("Error processing voice with Gemini:", error);
+    } finally {
+      session.isProcessing = false;
+    }
+  });
 }
 
 export async function speakInGuild(guildId, text) {
@@ -73,7 +128,27 @@ export async function speakInGuild(guildId, text) {
 
     session.connection.subscribe(player);
     player.play(resource);
+
+    return new Promise((resolve) => {
+      player.on(AudioPlayerStatus.Idle, () => {
+        resolve();
+      });
+      player.on('error', (err) => {
+        console.error("Audio player error:", err);
+        resolve();
+      });
+    });
   } catch (error) {
     console.error("เกิดข้อผิดพลาดในการเล่นเสียง:", error);
   }
+}
+
+export function leaveChannel(guildId) {
+  const connection = getVoiceConnection(guildId);
+  if (connection) {
+    connection.destroy();
+    sessions.delete(guildId);
+    return true;
+  }
+  return false;
 }
