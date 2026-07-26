@@ -2,8 +2,9 @@
 // รัน: npm start (หรือกดปุ่ม Run บน Replit)
 
 import "dotenv/config";
+import ffmpeg from "ffmpeg-static"; // <--- เพิ่มบรรทัดนี้เข้ามา
 import { Client, GatewayIntentBits, Partials } from "discord.js";
-import { CONFIG } from "./config.js";
+// ... โค้ดส่วนที่เหลือเหมือนเดิม
 import { chatReply } from "./gemini.js";
 import { startBridge, sendToMinecraft, bridgeEvents } from "./wsBridge.js";
 import { joinChannel, leaveChannel, hasSession, speakInGuild, setDiscordClient } from "./voiceHandler.js";
