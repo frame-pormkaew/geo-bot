@@ -34,14 +34,14 @@ export async function joinChannel(voiceChannel, textChannel) {
 
   const receiver = connection.receiver;
 
-  // วิธีดักจับแบบบังคับ Subscribe ผู้ใช้ทุกคนในห้อง
+  // บังคับจับสตรีมทุกคนในห้อง
   voiceChannel.members.forEach((member) => {
     if (!member.user.bot) {
       subscribeToUser(receiver, member.id, voiceChannel.guild.id, textChannel);
     }
   });
 
-  // เมื่อมีคนใหม่กดเข้าห้องมา ให้ดักจับเพิ่มทันที
+  // ดักจับเมื่อมีคนใหม่เข้ามาพูด
   receiver.speaking.on("start", (userId) => {
     subscribeToUser(receiver, userId, voiceChannel.guild.id, textChannel);
   });
@@ -54,7 +54,7 @@ export async function joinChannel(voiceChannel, textChannel) {
     activeSubscribers: new Set()
   });
 
-  console.log(`[Voice System] เข้าร่วมห้องเสียง ${voiceChannel.name} และเริ่มดักฟังสมาชิกทุกคนแล้ว`);
+  console.log(`[Voice System] เข้าร่วมห้องเสียง ${voiceChannel.name} และพร้อมดักจับเสียงแล้ว`);
   return connection;
 }
 
@@ -62,50 +62,49 @@ function subscribeToUser(receiver, userId, guildId, textChannel) {
   const session = sessions.get(guildId);
   if (!session) return;
 
-  // ถ้าอัดเสียงผู้ใช้นี้อยู่แล้ว ให้ข้าม
   if (session.activeSubscribers.has(userId)) return;
   session.activeSubscribers.add(userId);
 
-  console.log(`[Voice System] เริ่มสตรีมดักจับเสียงจาก User ID: ${userId}`);
+  console.log(`[Voice System] กำลังสร้าง Audio Stream สำหรับ User ID: ${userId}`);
 
   try {
     const opusStream = receiver.subscribe(userId, {
       end: {
         behavior: EndBehaviorType.AfterSilence,
-        duration: 1200, // เงียบไป 1.2 วินาทีถือว่าจบประโยค
+        duration: 1200,
       },
     });
 
+    // ใช้ Opus Decoder แบบกำหนด Rate ชัดเจน
     const pcmDecoder = new prism.opus.Decoder({ frameSize: 960, channels: 1, rate: 16000 });
     const tempFilePath = path.join("/tmp", `voice_${userId}_${Date.now()}.pcm`);
     const outStream = fs.createWriteStream(tempFilePath);
 
     pipeline(opusStream, pcmDecoder, outStream, async (err) => {
-      session.activeSubscribers.delete(userId); // เคลียร์สถานะเพื่อให้จับเสียงครั้งถัดไปได้
+      session.activeSubscribers.delete(userId);
 
       if (err) {
         console.error("[Voice Pipeline Error]:", err);
         return;
       }
 
-      if (session.isProcessing) return; // ถ้า AI กำลังประมวลผลคำตอบอยู่ให้ข้าม
+      if (session.isProcessing) return;
 
       try {
         if (!fs.existsSync(tempFilePath)) return;
 
         const audioBuffer = fs.readFileSync(tempFilePath);
-        fs.unlinkSync(tempFilePath); // ลบไฟล์ temp
+        fs.unlinkSync(tempFilePath);
 
-        console.log(`[Voice Debug] อ่านไฟล์เสียงสำเร็จ ขนาด: ${audioBuffer.length} bytes`);
+        console.log(`[Voice Debug] บันทึกเสียงสำเร็จ! ขนาดไฟล์: ${audioBuffer.length} bytes`);
 
-        // ถ้าไฟล์เสียงเล็กกว่า 6KB แสดงว่าแค่เปิดไมค์ทิ้งไว้หรือมีเสียงรบกวนสั้นๆ
-        if (audioBuffer.length < 6000) {
+        if (audioBuffer.length < 5000) {
           console.log("[Voice Debug] เสียงสั้นเกินไป ข้าม");
           return;
         }
 
         session.isProcessing = true;
-        console.log(`[AI Voice] กำลังส่งไฟล์เสียงให้ Gemini 1.5 Flash...`);
+        console.log(`[AI Voice] ส่งเสียงให้ Gemini คิดคำตอบ...`);
 
         const response = await model.generateContent([
           {
