@@ -34,8 +34,9 @@ export async function joinChannel(voiceChannel, textChannel) {
 
   const receiver = connection.receiver;
 
-  // ดักฟังเวลาคนเริ่มพูดในห้องเสียง
+  // ดักฟังเหตุการณ์เมื่อมีคนเริ่มพูด
   receiver.speaking.on("start", (userId) => {
+    console.log(`[Voice System] ตรวจพบการพูดจาก UserId: ${userId}`);
     listenAndReply(receiver, userId, voiceChannel.guild.id, textChannel);
   });
 
@@ -49,68 +50,76 @@ export async function joinChannel(voiceChannel, textChannel) {
   return connection;
 }
 
-// อัดเสียง อัปโหลดไป Gemini แล้วแปลงคำตอบเป็นเสียงพูดกลับมา
 async function listenAndReply(receiver, userId, guildId, textChannel) {
   const session = sessions.get(guildId);
   if (!session || session.isProcessing) return; 
 
-  session.isProcessing = true; // ล็อกไว้ไม่ให้อัดเสียงซ้ำซ้อนขณะกำลังประมวลผล
+  session.isProcessing = true;
 
-  const opusStream = receiver.subscribe(userId, {
-    end: {
-      behavior: EndBehaviorType.AfterSilence,
-      duration: 1200, // เงียบไป 1.2 วินาทีถือว่าพูดจบประโยค
-    },
-  });
+  try {
+    // รับ Audio Stream จากผู้ใช้
+    const opusStream = receiver.subscribe(userId, {
+      end: {
+        behavior: EndBehaviorType.AfterSilence,
+        duration: 1200, // เงียบไป 1.2 วินาทีถือว่าพูดจบ
+      },
+    });
 
-  const pcmDecoder = new prism.opus.Decoder({ frameSize: 960, channels: 2, rate: 48000 });
-  const tempFilePath = path.join("/tmp", `user_voice_${Date.now()}.pcm`);
-  const outStream = fs.createWriteStream(tempFilePath);
+    const pcmDecoder = new prism.opus.Decoder({ frameSize: 960, channels: 1, rate: 16000 });
+    const tempFilePath = path.join("/tmp", `user_${userId}_${Date.now()}.pcm`);
+    const outStream = fs.createWriteStream(tempFilePath);
 
-  pipeline(opusStream, pcmDecoder, outStream, async (err) => {
-    if (err) {
-      console.error("Audio pipeline error:", err);
-      session.isProcessing = false;
-      return;
-    }
-
-    try {
-      const audioBuffer = fs.readFileSync(tempFilePath);
-      if (fs.existsSync(tempFilePath)) {
-        fs.unlinkSync(tempFilePath); // ลบไฟล์ชั่วคราวทิ้ง
-      }
-
-      // ถ้าไฟล์เสียงสั้นเกินไป (ไม่มีเสียงพูดจริง) ให้ข้าม
-      if (audioBuffer.length < 10000) {
+    pipeline(opusStream, pcmDecoder, outStream, async (err) => {
+      if (err) {
+        console.error("[Voice Error] Audio pipeline:", err);
         session.isProcessing = false;
         return;
       }
 
-      console.log("[AI Voice] กำลังส่งเสียงไปให้ Gemini คิดคำตอบ...");
+      try {
+        if (!fs.existsSync(tempFilePath)) {
+          session.isProcessing = false;
+          return;
+        }
 
-      // ส่งไฟล์เสียงตรงให้ Gemini 1.5 Flash ประมวลผล
-      const response = await model.generateContent([
-        {
-          inlineData: {
-            mimeType: 'audio/pcm',
-            data: audioBuffer.toString('base64')
-          }
-        },
-        'ตอบคำถามจากเสียงนี้สั้นๆ กระชับ เป็นกันเอง ภาษาไทย'
-      ]);
+        const audioBuffer = fs.readFileSync(tempFilePath);
+        fs.unlinkSync(tempFilePath); // ลบไฟล์ชั่วคราว
 
-      const replyText = response.response.text();
-      console.log(`[Gemini ตอบ]: ${replyText}`);
+        // ถ้าขนาดเสียงเล็กเกินไป (ไม่มีการพูดจริง หรือมีแต่เสียงซ่า) ให้ข้าม
+        if (audioBuffer.length < 8000) {
+          console.log("[Voice System] เสียงสั้นเกินไป ข้ามการประมวลผล");
+          session.isProcessing = false;
+          return;
+        }
 
-      if (replyText) {
-        await speakInGuild(guildId, replyText);
+        console.log(`[AI Voice] กำลังส่งเสียงไปประมวลผลที่ Gemini...`);
+
+        const response = await model.generateContent([
+          {
+            inlineData: {
+              mimeType: 'audio/pcm',
+              data: audioBuffer.toString('base64')
+            }
+          },
+          'ตอบคำถามจากเสียงนี้สั้นๆ กระชับ เป็นกันเอง ภาษาไทย'
+        ]);
+
+        const replyText = response.response.text();
+        console.log(`[Gemini ตอบกลับ]: ${replyText}`);
+
+        if (replyText) {
+          await speakInGuild(guildId, replyText);
+        }
+      } catch (error) {
+        console.error("[Gemini Error]:", error);
+      } finally {
+        session.isProcessing = false;
       }
-    } catch (error) {
-      console.error("Error processing voice with Gemini:", error);
-    } finally {
-      session.isProcessing = false;
-    }
-  });
+    });
+  } catch (e) {
+    console.error("[Subscribe Error]:", e);
+    session.isProcessing = false;
+  }
 }
 
 export async function speakInGuild(guildId, text) {
@@ -128,9 +137,7 @@ export async function speakInGuild(guildId, text) {
     player.play(resource);
 
     return new Promise((resolve) => {
-      player.on(AudioPlayerStatus.Idle, () => {
-        resolve();
-      });
+      player.on(AudioPlayerStatus.Idle, () => resolve());
       player.on('error', (err) => {
         console.error("Audio player error:", err);
         resolve();
