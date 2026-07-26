@@ -3,15 +3,15 @@ import {
   getVoiceConnection,
   createAudioPlayer,
   createAudioResource,
-  AudioPlayerStatus
+  AudioPlayerStatus,
+  EndBehaviorType,
+  StreamType
 } from "@discordjs/voice";
+import { Endianness } from "@prism-media/prism";
+import pipeline from "stream";
+import fs from "fs";
 
-let discordClient = null;
 const sessions = new Map();
-
-export function setDiscordClient(client) {
-  discordClient = client;
-}
 
 export async function joinChannel(voiceChannel, textChannel) {
   if (!voiceChannel) throw new Error("ไม่พบห้องเสียง");
@@ -28,6 +28,14 @@ export async function joinChannel(voiceChannel, textChannel) {
     });
   }
 
+  // ดักจับเสียงคนพูดในห้อง (Receiver)
+  const receiver = connection.receiver;
+
+  receiver.speaking.on("start", (userId) => {
+    // เมื่อมีคนเริ่มพูดในห้องเสียง
+    listenToUser(receiver, userId, voiceChannel.guild.id, textChannel);
+  });
+
   sessions.set(voiceChannel.guild.id, {
     connection,
     textChannel,
@@ -37,45 +45,34 @@ export async function joinChannel(voiceChannel, textChannel) {
   return connection;
 }
 
-export function leaveChannel(guildId) {
-  const connection = getVoiceConnection(guildId);
-  if (connection) {
-    connection.destroy();
-    sessions.delete(guildId);
-    return true;
-  }
-  return false;
+// ฟังก์ชันอัดเสียงคนพูดเมื่อหยุดพูดเกิน 1 วินาที
+function listenToUser(receiver, userId, guildId, textChannel) {
+  const audioStream = receiver.subscribe(userId, {
+    end: {
+      behavior: EndBehaviorType.AfterSilence,
+      duration: 1000, // เงียบไป 1 วินาที ถือว่าพูดจบประโยค
+    },
+  });
+
+  console.log(`[Voice] กำลังฟังเสียงจาก User: ${userId}...`);
+
+  // แปลง Audio Stream เป็นไฟล์พร้อมส่งให้ AI
+  // (จุดนี้จะถูกส่งไปที่ STT -> Gemini AI -> ตอบกลับด้วยเสียง)
 }
 
-export function hasSession(guildId) {
-  return sessions.has(guildId);
-}
-
-// ฟังก์ชันสั่งให้บอทพูดเสียงภาษาไทยในห้อง
 export async function speakInGuild(guildId, text) {
   const session = sessions.get(guildId);
   if (!session) return;
 
   try {
-    // สร้าง Google Translate TTS URL โดยตรงแบบไม่ต้องงึ่งไลบรารีภายนอก
     const encodedText = encodeURIComponent(text);
-    const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodedText}&tl=th&client=tw-ob`;
+    const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=th&client=tw-ob&q=${encodedText}`;
 
     const player = createAudioPlayer();
-    const resource = createAudioResource(url);
+    const resource = createAudioResource(url, { inputType: StreamType.Arbitrary });
 
     session.connection.subscribe(player);
     player.play(resource);
-
-    return new Promise((resolve) => {
-      player.on(AudioPlayerStatus.Idle, () => {
-        resolve();
-      });
-      player.on('error', (error) => {
-        console.error('Audio Player Error:', error);
-        resolve();
-      });
-    });
   } catch (error) {
     console.error("เกิดข้อผิดพลาดในการเล่นเสียง:", error);
   }
