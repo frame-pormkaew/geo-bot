@@ -5,7 +5,6 @@ import {
   createAudioResource,
   AudioPlayerStatus
 } from "@discordjs/voice";
-import googleTTS from "google-tts-api"; // ใช้แปลงข้อความเปนเสียงพูดภาษาไทย
 
 let discordClient = null;
 const sessions = new Map();
@@ -52,18 +51,15 @@ export function hasSession(guildId) {
   return sessions.has(guildId);
 }
 
-// ฟังก์ชันสั่งให้บอทพูดเสียงออกมาในห้อง
+// ฟังก์ชันสั่งให้บอทพูดเสียงภาษาไทยในห้อง
 export async function speakInGuild(guildId, text) {
   const session = sessions.get(guildId);
   if (!session) return;
 
   try {
-    // สร้างลิงก์เสียงพูดภาษาไทยจาก Google TTS
-    const url = googleTTS.getAudioUrl(text, {
-      lang: 'th',
-      slow: false,
-      host: 'https://translate.google.com',
-    });
+    // สร้าง Google Translate TTS URL โดยตรงแบบไม่ต้องงึ่งไลบรารีภายนอก
+    const encodedText = encodeURIComponent(text);
+    const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodedText}&tl=th&client=tw-ob`;
 
     const player = createAudioPlayer();
     const resource = createAudioResource(url);
@@ -73,6 +69,10 @@ export async function speakInGuild(guildId, text) {
 
     return new Promise((resolve) => {
       player.on(AudioPlayerStatus.Idle, () => {
+        resolve();
+      });
+      player.on('error', (error) => {
+        console.error('Audio Player Error:', error);
         resolve();
       });
     });
