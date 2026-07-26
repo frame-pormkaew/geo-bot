@@ -8,7 +8,7 @@ import {
   StreamType
 } from "@discordjs/voice";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import prism from "@prism-media/prism";
+import prism from "prism-media";
 import { pipeline } from "stream";
 import fs from "fs";
 import path from "path";
