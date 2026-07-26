@@ -4,12 +4,14 @@ import {
   createAudioPlayer,
   createAudioResource,
   AudioPlayerStatus,
+  VoiceConnectionStatus,
   EndBehaviorType,
-  StreamType
+  StreamType,
+  entersState
 } from "@discordjs/voice";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import prism from "prism-media";
-import { pipeline } from "stream";
+import { pipeline, Readable } from "stream";
 import fs from "fs";
 import path from "path";
 
@@ -17,94 +19,100 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 const sessions = new Map();
 
+// Frame เสียงเงียบสำหรับ Warm-up ช่องสัญญาณ UDP ของ Discord
+const SILENCE_FRAME = Buffer.from([0xf8, 0xff, 0xfe]);
+
 export async function joinChannel(voiceChannel, textChannel) {
   if (!voiceChannel) throw new Error("ไม่พบห้องเสียง");
 
-  let connection = getVoiceConnection(voiceChannel.guild.id);
+  let connection = joinVoiceChannel({
+    channelId: voiceChannel.id,
+    guildId: voiceChannel.guild.id,
+    adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+    selfDeaf: false,
+    selfMute: false,
+  });
 
-  if (!connection) {
-    connection = joinVoiceChannel({
-      channelId: voiceChannel.id,
-      guildId: voiceChannel.guild.id,
-      adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-      selfDeaf: false,
-      selfMute: false,
-    });
+  try {
+    // รอจนกว่าสถานะ Voice Connection จะ Ready จริงๆ
+    await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+    console.log(`[Voice System] เชื่อมต่อสถานะ Ready กับห้อง ${voiceChannel.name} สำเร็จ`);
+  } catch (error) {
+    console.error("[Voice System] เชื่อมต่อห้องเสียงล้มเหลว:", error);
+    connection.destroy();
+    throw error;
   }
+
+  // ส่ง Silence Frame เพื่อกระตุ้นให้ Discord Voice Server เปิดรับ UDP Packet
+  const player = createAudioPlayer();
+  const silenceStream = new Readable({ read() { this.push(SILENCE_FRAME); this.push(null); } });
+  const resource = createAudioResource(silenceStream, { inputType: StreamType.Opus });
+  connection.subscribe(player);
+  player.play(resource);
 
   const receiver = connection.receiver;
 
-  // บังคับจับสตรีมทุกคนในห้อง
-  voiceChannel.members.forEach((member) => {
-    if (!member.user.bot) {
-      subscribeToUser(receiver, member.id, voiceChannel.guild.id, textChannel);
-    }
-  });
-
-  // ดักจับเมื่อมีคนใหม่เข้ามาพูด
+  // ดักจับเมื่อผู้ใช้เริ่มพูด
   receiver.speaking.on("start", (userId) => {
-    subscribeToUser(receiver, userId, voiceChannel.guild.id, textChannel);
+    console.log(`[Voice System] ตรวจพบการเปิดไมค์จาก User: ${userId}`);
+    handleUserSpeaking(receiver, userId, voiceChannel.guild.id, textChannel);
   });
 
   sessions.set(voiceChannel.guild.id, {
     connection,
     textChannel,
     voiceChannel,
-    isProcessing: false,
-    activeSubscribers: new Set()
+    isProcessing: false
   });
 
-  console.log(`[Voice System] เข้าร่วมห้องเสียง ${voiceChannel.name} และพร้อมดักจับเสียงแล้ว`);
   return connection;
 }
 
-function subscribeToUser(receiver, userId, guildId, textChannel) {
+async function handleUserSpeaking(receiver, userId, guildId, textChannel) {
   const session = sessions.get(guildId);
-  if (!session) return;
+  if (!session || session.isProcessing) return;
 
-  if (session.activeSubscribers.has(userId)) return;
-  session.activeSubscribers.add(userId);
-
-  console.log(`[Voice System] กำลังสร้าง Audio Stream สำหรับ User ID: ${userId}`);
+  session.isProcessing = true;
+  console.log(`[Voice System] เริ่มอัดเสียงจาก User: ${userId}`);
 
   try {
     const opusStream = receiver.subscribe(userId, {
       end: {
         behavior: EndBehaviorType.AfterSilence,
-        duration: 1200,
+        duration: 1000, // ถือว่าพูดจบประโยคเมื่อเงียบไป 1 วินาที
       },
     });
 
-    // ใช้ Opus Decoder แบบกำหนด Rate ชัดเจน
     const pcmDecoder = new prism.opus.Decoder({ frameSize: 960, channels: 1, rate: 16000 });
-    const tempFilePath = path.join("/tmp", `voice_${userId}_${Date.now()}.pcm`);
+    const tempFilePath = path.join("/tmp", `user_${userId}_${Date.now()}.pcm`);
     const outStream = fs.createWriteStream(tempFilePath);
 
     pipeline(opusStream, pcmDecoder, outStream, async (err) => {
-      session.activeSubscribers.delete(userId);
-
       if (err) {
-        console.error("[Voice Pipeline Error]:", err);
+        console.error("[Audio Pipeline Error]:", err);
+        session.isProcessing = false;
         return;
       }
 
-      if (session.isProcessing) return;
-
       try {
-        if (!fs.existsSync(tempFilePath)) return;
+        if (!fs.existsSync(tempFilePath)) {
+          session.isProcessing = false;
+          return;
+        }
 
         const audioBuffer = fs.readFileSync(tempFilePath);
         fs.unlinkSync(tempFilePath);
 
-        console.log(`[Voice Debug] บันทึกเสียงสำเร็จ! ขนาดไฟล์: ${audioBuffer.length} bytes`);
+        console.log(`[Voice System] อัดเสียงสำเร็จ! ขนาด: ${audioBuffer.length} bytes`);
 
-        if (audioBuffer.length < 5000) {
-          console.log("[Voice Debug] เสียงสั้นเกินไป ข้าม");
+        // ถ้าไฟล์เสียงเล็กกว่า 4KB ให้ตัดออก (เสียงกดไมค์/ลมเข้าไมค์)
+        if (audioBuffer.length < 4000) {
+          console.log("[Voice System] เสียงสั้นเกินไป ข้ามการประมวลผล");
+          session.isProcessing = false;
           return;
         }
 
-        session.isProcessing = true;
-        console.log(`[AI Voice] ส่งเสียงให้ Gemini คิดคำตอบ...`);
+        console.log(`[AI Thinking] กำลังส่งเสียงไปประมวลผลที่ Gemini...`);
 
         const response = await model.generateContent([
           {
@@ -117,7 +125,7 @@ function subscribeToUser(receiver, userId, guildId, textChannel) {
         ]);
 
         const replyText = response.response.text();
-        console.log(`[Gemini ตอบ]: ${replyText}`);
+        console.log(`[Gemini Answer]: ${replyText}`);
 
         if (replyText) {
           if (textChannel) {
@@ -126,7 +134,7 @@ function subscribeToUser(receiver, userId, guildId, textChannel) {
           await speakInGuild(guildId, replyText);
         }
       } catch (error) {
-        console.error("[Gemini Voice Error]:", error);
+        console.error("[Gemini Error]:", error);
       } finally {
         session.isProcessing = false;
       }
@@ -134,7 +142,7 @@ function subscribeToUser(receiver, userId, guildId, textChannel) {
 
   } catch (e) {
     console.error("[Subscribe Error]:", e);
-    session.activeSubscribers.delete(userId);
+    session.isProcessing = false;
   }
 }
 
@@ -160,7 +168,7 @@ export async function speakInGuild(guildId, text) {
       });
     });
   } catch (error) {
-    console.error("เกิดข้อผิดพลาดในการเล่นเสียง:", error);
+    console.error("เกิดข้อผิดพลาดในการเล่นเสียงตอบกลับ:", error);
   }
 }
 
